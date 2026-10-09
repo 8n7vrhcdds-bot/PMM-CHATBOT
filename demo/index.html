@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Belt and braces: the page may not make any network requests at all. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src 'none'; img-src 'self' data:">
+<title>PMM Chat Demo</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#fff; --fg:#1d2329; --muted:#66707a; --line:#e3e7eb; --accent:#0f6e5a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121519; --card:#1b1f24; --fg:#e6e9ec; --muted:#9aa4ae; --line:#2f353c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 24px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  .note { font-size:12px; color:var(--muted); }
+  label.btn { border:1px solid var(--line); border-radius:8px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  label.btn input { display:none; }
+  main { padding:24px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin-bottom:16px; overflow-x:auto; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12.5px; }
+  td.r, th.r { text-align:right; }
+  .banner { background:#fff6e0; color:#5c4400; border:1px solid #f0d58c; border-radius:8px; padding:8px 12px; margin-bottom:16px; font-size:13px; }
+  @media (prefers-color-scheme: dark) { .banner { background:#3a3014; color:#f5dfa0; border-color:#6b5520; } }
+  @media (max-width:600px) { header, main { padding:12px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Portfolio Monitoring &amp; Management</h1>
+  <span class="note" id="source">Synthetic sample data</span>
+  <label class="btn">Load CSV… <input type="file" id="csv" accept=".csv,text/csv"></label>
+</header>
+<main>
+  <div class="banner" id="banner">Demo with <b>synthetic</b> data. Click <b>Ask the data</b> (bottom right) and try “What's our exposure with ANB?”, then “And how much is over 90 DPD?”. You can also load your own CSV; it's read in this browser only.</div>
+  <div class="card">
+    <h2>Exposure by partner</h2>
+    <div id="byPartner"></div>
+  </div>
+</main>
+
+<script src="sample-data.js"></script>
+<script src="../pmm-chat.js"></script>
+<script>
+  // In the real dashboard this is whatever array the dashboard already builds from its files.
+  let portfolio = PMMSample.generate(2400, 7);
+
+  function renderPartnerTable() {
+    const schema = chat.engine.schema();
+    const dim = schema.dims.find(d => /partner|bank|lender/.test(d.n)) || schema.dims[0];
+    const amt = schema.amountKey, el = document.getElementById('byPartner');
+    if (!dim || !amt) { el.textContent = 'Loaded ' + portfolio.length + ' rows.'; return; }
+    const g = {};
+    for (const r of portfolio) { const k = r[dim.key] || '(blank)'; g[k] = (g[k] || 0) + (parseFloat(String(r[amt]).replace(/,/g, '')) || 0); }
+    const tot = Object.values(g).reduce((a, b) => a + b, 0);
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    el.innerHTML = '<table><thead><tr><th>' + esc(dim.label) + '</th><th class="r">' + esc(amt) + '</th><th class="r">Share</th></tr></thead><tbody>' +
+      Object.entries(g).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+        `<tr><td>${esc(k)}</td><td class="r">${Math.round(v).toLocaleString('en-US')}</td><td class="r">${(v / tot * 100).toFixed(1)}%</td></tr>`).join('') +
+      '</tbody></table>';
+  }
+
+  const chat = PMMChat.init({
+    data: () => portfolio,                 // always reads the live data
+    currency: 'SAR',
+    nplDpd: 90,
+    aliases: { SAIB: 'Saudi Investment Bank', Rajhi: 'Al Rajhi Bank', SNB: 'Saudi National Bank' },
+    title: 'Portfolio Assistant',
+  });
+  renderPartnerTable();
+
+  // Minimal CSV reader (quoted fields supported). Runs locally; nothing is uploaded.
+  function parseCSV(text) {
+    const rows = []; let row = [], field = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; }
+      else if (c === '"') q = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(field); rows.push(row); row = []; field = ''; }
+      else field += c;
+    }
+    if (field || row.length) { row.push(field); rows.push(row); }
+    const head = rows.shift().map(h => h.replace(/^﻿/, '').trim());
+    return rows.filter(r => r.some(v => v !== '')).map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+  }
+  document.getElementById('csv').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    portfolio = parseCSV(await file.text());
+    document.getElementById('source').textContent = file.name + ' (' + portfolio.length.toLocaleString() + ' rows, local only)';
+    document.getElementById('banner').style.display = 'none';
+    chat.refresh();
+    renderPartnerTable();
+  });
+</script>
+</body>
+</html>
